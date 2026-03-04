@@ -4,9 +4,9 @@ from pathlib import Path
 
 # S3 source
 S3_BUCKET = "eotarchive"
-S3_PREFIX = "eot-index/table/eot-main"
+# S3_PREFIX = "eot-index/table/eot-main"
+S3_PREFIX = "crawl-data"
 
-# Available crawl years in the EOT archive
 AVAILABLE_YEARS = [2004, 2008, 2012, 2016, 2020]
 
 # Federal .gov domains to analyse
@@ -36,11 +36,11 @@ DATA_DIR = Path("data")
 DB_PATH = DATA_DIR / "eot.duckdb"
 
 
-def parquet_dir(data_dir: Path, year: int) -> Path:
-    """Return the local directory for a given crawl year's parquet files."""
-    return data_dir / "parquet" / f"EOT-{year}"
+def cdxj_dir(data_dir: Path, year: int) -> Path:
+    """Return the local directory for a given crawl year's CDXJ files."""
+    return data_dir / "cdxj" / f"EOT-{year}"
 
 
-def parquet_glob(data_dir: Path, year: int) -> str:
-    """Return a glob string DuckDB can use to read all parquets for a year."""
-    return str(parquet_dir(data_dir, year) / "*.parquet")
+def cdxj_glob(data_dir: Path, year: int) -> str:
+    """Return a glob string for all CDXJ files for a year."""
+    return str(cdxj_dir(data_dir, year) / "*.cdxj.gz")

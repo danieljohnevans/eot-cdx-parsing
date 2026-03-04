@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download EOT parquet index files from S3.
+"""Download EOT CDXJ index files from S3.
 
 Usage:
     python download_eot.py                  # downloads 2012 (default)
@@ -15,29 +15,29 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from tqdm import tqdm
 
-from config import AVAILABLE_YEARS, DATA_DIR, S3_BUCKET, S3_PREFIX, parquet_dir
+from config import AVAILABLE_YEARS, DATA_DIR, S3_BUCKET, S3_PREFIX, cdxj_dir
 
 
-def list_parquet_keys(s3, year: int) -> list[dict]:
-    """List all parquet part-files for a given crawl year."""
-    prefix = f"{S3_PREFIX}/crawl=EOT-{year}/"
+def list_cdxj_keys(s3, year: int) -> list[dict]:
+    """List all .cdxj.gz files for a given crawl year."""
+    prefix = f"{S3_PREFIX}/EOT-{year}/"
     paginator = s3.get_paginator("list_objects_v2")
     objects = []
     for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
         for obj in page.get("Contents", []):
-            if obj["Key"].endswith(".parquet"):
+            if obj["Key"].endswith(".cdxj.gz"):
                 objects.append(obj)
     return objects
 
 
 def download_year(s3, year: int, data_dir):
-    """Download all parquet files for one crawl year, skipping existing."""
-    out_dir = parquet_dir(data_dir, year)
+    """Download all CDXJ files for one crawl year, skipping existing."""
+    out_dir = cdxj_dir(data_dir, year)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    objects = list_parquet_keys(s3, year)
+    objects = list_cdxj_keys(s3, year)
     if not objects:
-        print(f"  No parquet files found for EOT-{year}")
+        print(f"  No CDXJ files found for EOT-{year}")
         return
 
     # Figure out how much we actually need to download (skip already-done files)
@@ -72,7 +72,7 @@ def download_year(s3, year: int, data_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download EOT parquet index files from S3")
+    parser = argparse.ArgumentParser(description="Download EOT CDXJ index files from S3")
     parser.add_argument(
         "--years",
         nargs="+",
@@ -105,7 +105,7 @@ def main():
     s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
 
     for year in years:
-        print(f"Downloading EOT-{year} parquet files...")
+        print(f"Downloading EOT-{year} CDXJ files...")
         download_year(s3, year, data_dir)
 
     print("Done.")

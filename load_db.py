@@ -21,8 +21,8 @@ from config import (
     DB_PATH,
     PATH_SEGMENT_DEPTH,
     TARGET_DOMAINS,
-    parquet_dir,
-    parquet_glob,
+    cdxj_dir,
+    cdxj_glob,
 )
 
 
@@ -44,12 +44,12 @@ def build_path_segment_columns() -> str:
 
 def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: str):
     """Load one crawl year's parquet data into the database, filtered."""
-    pdir = parquet_dir(data_dir, year)
-    if not pdir.exists() or not any(pdir.glob("*.parquet")):
-        print(f"  No parquet files found at {pdir} — run download_eot.py first")
+    pdir = cdxj_dir(data_dir, year)
+    if not pdir.exists() or not any(pdir.glob("*.cdxj.gz")):
+        print(f"  No CDXJ files found at {pdir} — run download_eot.py first")
         return
 
-    glob_path = parquet_glob(data_dir, year)
+    glob_path = cdxj_glob(data_dir, year)
     domain_filter = build_domain_filter()
     path_segments = build_path_segment_columns()
 
