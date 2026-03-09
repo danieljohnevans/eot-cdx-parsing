@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Load downloaded EOT parquet files into a filtered DuckDB database.
+"""Load downloaded EOT CDXJ files into a filtered DuckDB database.
 
-Filters to target .gov domains, extracts subdomains and URL path segments.
+Parses .cdxj.gz files, filters to target .gov domains, extracts host/path info.
 
 Usage:
     python load_db.py                       # loads 2012 (default)
@@ -10,10 +10,14 @@ Usage:
 """
 
 import argparse
+import glob
+import gzip
+import json
 import sys
 import time
 
 import duckdb
+from tqdm import tqdm
 
 from config import (
     AVAILABLE_YEARS,
@@ -22,13 +26,24 @@ from config import (
     PATH_SEGMENT_DEPTH,
     TARGET_DOMAINS,
     cdxj_dir,
-    cdxj_glob,
 )
 
+BATCH_SIZE = 100_000
 
-def build_domain_filter(column: str = "url_host_registered_domain") -> str:
-    """Build a SQL WHERE clause matching any target domain."""
-    conditions = [f"{column} = '{d}'" for d in TARGET_DOMAINS]
+# Columns we extract from each CDXJ JSON blob
+CDXJ_COLUMNS = [
+    "url", "mime", "status", "digest", "length", "offset",
+    "filename", "mime-detected", "puid", "charset", "languages",
+    "surtkey", "timestamp",
+]
+
+
+def build_domain_filter(column: str = "host") -> str:
+    """Build a SQL WHERE clause matching any target domain (exact or subdomain)."""
+    conditions = []
+    for d in TARGET_DOMAINS:
+        conditions.append(f"{column} = '{d}'")
+        conditions.append(f"ends_with({column}, '.{d}')")
     return " OR ".join(conditions)
 
 
@@ -42,71 +57,118 @@ def build_path_segment_columns() -> str:
     return ",\n        ".join(parts)
 
 
+def parse_cdxj_file(path: str) -> list[dict]:
+    """Parse a single .cdxj.gz file into a list of row dicts."""
+    rows = []
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        for line in f:
+            try:
+                key, ts, json_blob = line.strip().split(" ", 2)
+                rec = json.loads(json_blob)
+                rec["surtkey"] = key
+                rec["timestamp"] = ts
+                rows.append({k: rec.get(k) for k in CDXJ_COLUMNS})
+            except Exception:
+                continue
+    return rows
+
+
 def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: str):
-    """Load one crawl year's parquet data into the database, filtered."""
+    """Load one crawl year's CDXJ data into the database, filtered."""
     pdir = cdxj_dir(data_dir, year)
-    if not pdir.exists() or not any(pdir.glob("*.cdxj.gz")):
-        print(f"  No CDXJ files found at {pdir} — run download_eot.py first")
+    if not pdir.exists():
+        print(f"  No CDXJ directory found at {pdir} — run download_eot.py first")
         return
 
-    glob_path = cdxj_glob(data_dir, year)
+    files = sorted(glob.glob(str(pdir / "*.cdxj.gz")))
+    if not files:
+        print(f"  No CDXJ files found in {pdir} — run download_eot.py first")
+        return
+
+    print(f"  Loading EOT-{year} ({len(files)} files)...")
+    t0 = time.time()
+
     domain_filter = build_domain_filter()
     path_segments = build_path_segment_columns()
 
-    # Check if table already exists
+    # Check if target table already exists
     existing = con.sql(
         f"SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_name = '{table_name}'"
     ).fetchone()[0]
 
-    verb = "INSERT INTO" if existing else "CREATE TABLE"
-    target = table_name if existing else f"{table_name} AS"
+    total_inserted = 0
+
+    # Process files in batches to keep memory bounded
+    batch = []
+    for filepath in tqdm(files, desc=f"  EOT-{year}", unit="file"):
+        batch.extend(parse_cdxj_file(filepath))
+
+        if len(batch) >= BATCH_SIZE:
+            total_inserted += _flush_batch(con, batch, table_name, existing, domain_filter, path_segments, year)
+            existing = True  # table exists after first flush
+            batch.clear()
+
+    # Flush remaining
+    if batch:
+        total_inserted += _flush_batch(con, batch, table_name, existing, domain_filter, path_segments, year)
+
+    elapsed = time.time() - t0
+    print(f"  Loaded {total_inserted:,} matching rows in {elapsed:.1f}s")
+
+
+def _flush_batch(con, rows, table_name, table_exists, domain_filter, path_segments, year) -> int:
+    """Insert a batch of parsed CDXJ rows into the target table, filtered."""
+    # Register the Python list as a DuckDB temporary table
+    con.execute("DROP VIEW IF EXISTS _cdxj_staging")
+    import pyarrow as pa
+    arrow_table = pa.Table.from_pylist(rows)
+    con.register("_cdxj_staging", arrow_table)
+
+    verb = "INSERT INTO" if table_exists else "CREATE TABLE"
+    target = table_name if table_exists else f"{table_name} AS"
 
     sql = f"""
     {verb} {target}
     SELECT
         url,
-        url_host_name,
-        url_host_registered_domain,
-        url_protocol,
-        url_path,
-        url_query,
+        lower(regexp_extract(url, '^[a-z]+://([^/?#:]+)', 1)) AS host,
+        regexp_extract(url, '^[a-z]+://[^/]+(/[^?#]*)', 1) AS url_path,
+        regexp_extract(url, '\\?(.*)$', 1) AS url_query,
 
-        -- derived: subdomain (everything before the registered domain)
-        CASE
-            WHEN url_host_name = url_host_registered_domain THEN NULL
-            WHEN ends_with(url_host_name, '.' || url_host_registered_domain)
-                THEN left(url_host_name, length(url_host_name) - length(url_host_registered_domain) - 1)
-            ELSE NULL
-        END AS subdomain,
-
-        -- derived: path segments
         {path_segments},
 
-        fetch_time,
-        fetch_status,
-        content_mime_type,
-        content_mime_detected,
+        mime,
+        CAST(status AS INTEGER) AS status,
+        digest,
+        CAST(length AS BIGINT) AS length,
+        CAST(offset AS BIGINT) AS offset,
+        filename AS warc_filename,
+        "mime-detected" AS mime_detected,
+        puid,
+        charset,
+        languages,
 
-        -- crawl metadata
+        surtkey,
+        timestamp AS fetch_timestamp,
         '{year}' AS crawl_year
 
-    FROM read_parquet('{glob_path}')
+    FROM _cdxj_staging
     WHERE {domain_filter}
     """
 
-    print(f"  Loading EOT-{year}...")
-    t0 = time.time()
-    con.execute(sql)
-    elapsed = time.time() - t0
+    before = 0
+    if table_exists:
+        before = con.sql(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
 
-    count = con.sql(
-        f"SELECT COUNT(*) FROM {table_name} WHERE crawl_year = '{year}'"
-    ).fetchone()[0]
-    print(f"  Loaded {count:,} rows in {elapsed:.1f}s")
+    con.execute(sql)
+
+    after = con.sql(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+    con.execute("DROP VIEW IF EXISTS _cdxj_staging")
+    return after - before
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Load EOT parquets into filtered DuckDB")
+    parser = argparse.ArgumentParser(description="Load EOT CDXJ files into filtered DuckDB")
     parser.add_argument(
         "--years",
         nargs="+",
@@ -117,7 +179,7 @@ def main():
         "--data-dir",
         type=str,
         default=str(DATA_DIR),
-        help=f"Base directory with downloaded parquets. Default: {DATA_DIR}",
+        help=f"Base directory with downloaded CDXJ files. Default: {DATA_DIR}",
     )
     parser.add_argument(
         "--db-path",
@@ -160,7 +222,7 @@ def main():
     print(f"Database: {db_path}")
     print("\nRows per domain:")
     con.sql(f"""
-        SELECT url_host_registered_domain AS domain, COUNT(*) AS captures
+        SELECT host, COUNT(*) AS captures
         FROM {args.table}
         GROUP BY 1
         ORDER BY 2 DESC
