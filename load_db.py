@@ -137,19 +137,19 @@ def _flush_batch(con, rows, table_name, table_exists, domain_filter, path_segmen
 
         {path_segments},
 
-        mime,
+        CAST(mime AS VARCHAR) AS mime,
         CAST(status AS INTEGER) AS status,
-        digest,
+        CAST(digest AS VARCHAR) AS digest,
         CAST("length" AS BIGINT) AS "length",
         CAST("offset" AS BIGINT) AS "offset",
-        filename AS warc_filename,
-        "mime-detected" AS mime_detected,
-        puid,
-        charset,
-        languages,
+        CAST(filename AS VARCHAR) AS warc_filename,
+        CAST("mime-detected" AS VARCHAR) AS mime_detected,
+        CAST(puid AS VARCHAR) AS puid,
+        CAST(charset AS VARCHAR) AS charset,
+        CAST(languages AS VARCHAR) AS languages,
 
-        surtkey,
-        timestamp AS fetch_timestamp,
+        CAST(surtkey AS VARCHAR) AS surtkey,
+        CAST(timestamp AS VARCHAR) AS fetch_timestamp,
         '{year}' AS crawl_year
 
     FROM _cdxj_staging
