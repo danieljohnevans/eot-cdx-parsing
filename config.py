@@ -4,8 +4,8 @@ from pathlib import Path
 
 # S3 source
 S3_BUCKET = "eotarchive"
-# S3_PREFIX = "eot-index/table/eot-main"
 S3_PREFIX = "crawl-data"
+PARQUET_S3_PREFIX = "eot-index/table/eot-main"
 
 AVAILABLE_YEARS = [2004, 2008, 2012, 2016, 2020]
 
@@ -34,6 +34,11 @@ PATH_SEGMENT_DEPTH = 5
 # Default local paths
 DATA_DIR = Path("data")
 DB_PATH = DATA_DIR / "eot.duckdb"
+
+
+def parquet_dir(data_dir: Path, year: int) -> Path:
+    """Return the local directory for a given crawl year's parquet files."""
+    return data_dir / "parquet" / f"EOT-{year}"
 
 
 def cdxj_dir(data_dir: Path, year: int) -> Path:
