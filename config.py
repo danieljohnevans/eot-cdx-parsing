@@ -34,6 +34,7 @@ PATH_SEGMENT_DEPTH = 5
 # Default local paths
 DATA_DIR = Path("data")
 DB_PATH = DATA_DIR / "eot.duckdb"
+PARQUET_DB_PATH = DATA_DIR / "eot_parquet.duckdb"
 
 
 def parquet_dir(data_dir: Path, year: int) -> Path:
