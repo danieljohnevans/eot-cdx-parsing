@@ -57,23 +57,36 @@ def build_path_segment_columns() -> str:
     return ",\n        ".join(parts)
 
 
-def parse_cdxj_file(path: str) -> list[dict]:
-    """Parse a single .cdxj.gz file into a list of row dicts."""
+def parse_cdxj_file(path: str, error_log=None) -> list[dict]:
+    """Parse a single .cdxj.gz file into a list of row dicts.
+
+    If error_log is a list, failed lines are appended as
+    (filepath, line_number, error_type, error_message, raw_line_preview).
+    """
     rows = []
     with gzip.open(path, "rt", encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             try:
                 key, ts, json_blob = line.strip().split(" ", 2)
                 rec = json.loads(json_blob)
                 rec["surtkey"] = key
                 rec["timestamp"] = ts
                 rows.append({k: rec.get(k) for k in CDXJ_COLUMNS})
-            except Exception:
+            except Exception as e:
+                if error_log is not None:
+                    error_log.append((
+                        path,
+                        lineno,
+                        type(e).__name__,
+                        str(e),
+                        line.strip()[:200],
+                    ))
                 continue
     return rows
 
 
-def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: str):
+def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: str,
+              error_log: list | None = None):
     """Load one crawl year's CDXJ data into the database, filtered."""
     pdir = cdxj_dir(data_dir, year)
     if not pdir.exists():
@@ -101,7 +114,7 @@ def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: s
     # Process files in batches to keep memory bounded
     batch = []
     for filepath in tqdm(files, desc=f"  EOT-{year}", unit="file"):
-        batch.extend(parse_cdxj_file(filepath))
+        batch.extend(parse_cdxj_file(filepath, error_log=error_log))
 
         if len(batch) >= BATCH_SIZE:
             total_inserted += _flush_batch(con, batch, table_name, existing, domain_filter, path_segments, year)
@@ -213,8 +226,10 @@ def main():
 
     con = duckdb.connect(str(db_path))
 
+    error_log: list[tuple] = []
+
     for year in years:
-        load_year(con, year, data_dir, args.table)
+        load_year(con, year, data_dir, args.table, error_log=error_log)
 
     # Print summary
     total = con.sql(f"SELECT COUNT(*) FROM {args.table}").fetchone()[0]
@@ -227,6 +242,25 @@ def main():
         GROUP BY 1
         ORDER BY 2 DESC
     """).show()
+
+    # Write parse errors to CSV
+    if error_log:
+        import csv
+        error_path = data_dir / "cdxj_parse_errors.csv"
+        with open(error_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["file", "line", "error_type", "error_message", "raw_line_preview"])
+            w.writerows(error_log)
+        print(f"\n{len(error_log):,} parse errors logged to {error_path}")
+
+        # Quick breakdown by error type
+        from collections import Counter
+        by_type = Counter(e[2] for e in error_log)
+        print("Errors by type:")
+        for etype, count in by_type.most_common():
+            print(f"  {etype}: {count:,}")
+    else:
+        print("\nNo parse errors.")
 
     con.close()
 
