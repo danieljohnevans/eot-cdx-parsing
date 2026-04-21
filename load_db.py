@@ -85,6 +85,41 @@ def parse_cdxj_file(path: str, error_log=None) -> list[dict]:
     return rows
 
 
+def scan_year_errors(year: int, data_dir, error_log: list):
+    """Parse one crawl year's CDXJ files and collect errors without writing to a DB."""
+    pdir = cdxj_dir(data_dir, year)
+    if not pdir.exists():
+        print(f"  No CDXJ directory found at {pdir} — run download_eot.py first")
+        return
+
+    files = sorted(glob.glob(str(pdir / "*.cdxj.gz")))
+    if not files:
+        print(f"  No CDXJ files found in {pdir} — run download_eot.py first")
+        return
+
+    print(f"  Scanning EOT-{year} ({len(files)} files)...")
+    t0 = time.time()
+    errors_before = len(error_log)
+
+    for filepath in tqdm(files, desc=f"  EOT-{year}", unit="file"):
+        with gzip.open(filepath, "rt", encoding="utf-8") as f:
+            for lineno, line in enumerate(f, 1):
+                try:
+                    key, ts, json_blob = line.strip().split(" ", 2)
+                    json.loads(json_blob)
+                except Exception as e:
+                    error_log.append((
+                        filepath,
+                        lineno,
+                        type(e).__name__,
+                        str(e),
+                        line.strip()[:200],
+                    ))
+
+    elapsed = time.time() - t0
+    print(f"  Scanned in {elapsed:.1f}s, {len(error_log) - errors_before:,} errors")
+
+
 def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: str,
               error_log: list | None = None):
     """Load one crawl year's CDXJ data into the database, filtered."""
@@ -206,6 +241,11 @@ def main():
         default="eot_captures",
         help="Target table name. Default: eot_captures",
     )
+    parser.add_argument(
+        "--errors-only",
+        action="store_true",
+        help="Scan CDXJ files for parse errors without writing to a DB. Only outputs cdxj_parse_errors.csv.",
+    )
     args = parser.parse_args()
 
     # Resolve years
@@ -221,27 +261,33 @@ def main():
             years.append(yr)
 
     data_dir = __import__("pathlib").Path(args.data_dir)
-    db_path = __import__("pathlib").Path(args.db_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    con = duckdb.connect(str(db_path))
 
     error_log: list[tuple] = []
 
-    for year in years:
-        load_year(con, year, data_dir, args.table, error_log=error_log)
+    if args.errors_only:
+        print("Errors-only mode: scanning CDXJ files without writing to a DB.\n")
+        for year in years:
+            scan_year_errors(year, data_dir, error_log)
+        con = None
+    else:
+        db_path = __import__("pathlib").Path(args.db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        con = duckdb.connect(str(db_path))
 
-    # Print summary
-    total = con.sql(f"SELECT COUNT(*) FROM {args.table}").fetchone()[0]
-    print(f"\nTotal rows in {args.table}: {total:,}")
-    print(f"Database: {db_path}")
-    print("\nRows per domain:")
-    con.sql(f"""
-        SELECT host, COUNT(*) AS captures
-        FROM {args.table}
-        GROUP BY 1
-        ORDER BY 2 DESC
-    """).show()
+        for year in years:
+            load_year(con, year, data_dir, args.table, error_log=error_log)
+
+        # Print summary
+        total = con.sql(f"SELECT COUNT(*) FROM {args.table}").fetchone()[0]
+        print(f"\nTotal rows in {args.table}: {total:,}")
+        print(f"Database: {db_path}")
+        print("\nRows per domain:")
+        con.sql(f"""
+            SELECT host, COUNT(*) AS captures
+            FROM {args.table}
+            GROUP BY 1
+            ORDER BY 2 DESC
+        """).show()
 
     # Write parse errors to CSV
     if error_log:
@@ -262,7 +308,8 @@ def main():
     else:
         print("\nNo parse errors.")
 
-    con.close()
+    if con is not None:
+        con.close()
 
 
 if __name__ == "__main__":
