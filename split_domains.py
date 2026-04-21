@@ -20,6 +20,13 @@ from config import DB_PATH, PARQUET_DB_PATH, TARGET_DOMAINS
 DATA_DIR = Path("data")
 
 
+def domain_folder_name(domain: str, all_domains: list[str]) -> str:
+    """Return 'NN_basename' like '01_commerce' for a domain (alphabetical index, no .gov)."""
+    idx = sorted(all_domains).index(domain) + 1
+    base = domain.removesuffix(".gov")
+    return f"{idx:02d}_{base}"
+
+
 def split_cdxj(cdxj_path: str, domain: str, out_path: Path):
     """Extract one domain from the CDXJ database."""
     src = duckdb.connect(cdxj_path, read_only=True)
@@ -78,19 +85,20 @@ def main():
     out_dir = Path(args.out_dir)
 
     print(f"Splitting {len(domains)} domains into {out_dir}/\n")
-    print(f"{'Domain':<25} {'CDXJ rows':>12} {'Parquet rows':>14} {'Diff':>10}")
+    print(f"{'Folder':<25} {'CDXJ rows':>12} {'Parquet rows':>14} {'Diff':>10}")
     print("-" * 65)
 
     t0 = time.time()
     for domain in domains:
-        cdxj_out = out_dir / domain / "cdxj.duckdb"
-        pq_out = out_dir / domain / "parquet.duckdb"
+        folder = domain_folder_name(domain, TARGET_DOMAINS)
+        cdxj_out = out_dir / folder / "cdxj.duckdb"
+        pq_out = out_dir / folder / "parquet.duckdb"
 
         cdxj_count = split_cdxj(args.cdxj_db, domain, cdxj_out)
         pq_count = split_parquet(args.parquet_db, domain, pq_out)
         diff = pq_count - cdxj_count
 
-        print(f"{domain:<25} {cdxj_count:>12,} {pq_count:>14,} {diff:>+10,}")
+        print(f"{folder:<25} {cdxj_count:>12,} {pq_count:>14,} {diff:>+10,}")
 
     elapsed = time.time() - t0
     print(f"\nDone in {elapsed:.1f}s")
