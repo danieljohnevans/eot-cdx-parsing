@@ -37,6 +37,10 @@ CDXJ_COLUMNS = [
     "surtkey", "timestamp",
 ]
 
+# Surtkey-derived column depths (mirror parquet's url_host_*_last_part 0..5)
+SURTHOST_DEPTH = 6   # surthost_seg_0..5
+SURTPATH_DEPTH = 5   # surtpath_1..5
+
 
 def build_domain_filter(column: str = "host") -> str:
     """Build a SQL WHERE clause matching any target domain (exact or subdomain)."""
@@ -53,6 +57,32 @@ def build_path_segment_columns() -> str:
     for i in range(1, PATH_SEGMENT_DEPTH + 1):
         parts.append(
             f"list_extract(string_split(trim(url_path, '/'), '/'), {i}) AS path_seg_{i}"
+        )
+    return ",\n        ".join(parts)
+
+
+# Surtkey is `host_part)path_part?query`, e.g. `gov,doi,data)/api/views/foo?fmt=json`
+# SURT canonicalizes the host AND path to lowercase, so surtpath_* ≠ path_seg_*
+# whenever the original URL had uppercase letters.
+SURTHOST_EXPR = "regexp_extract(surtkey, '^([^)]+)\\)', 1)"
+# Path-portion of surtkey, query string excluded (parallels url_path behavior).
+SURTPATH_EXPR = "regexp_extract(surtkey, '\\)([^?]*)', 1)"
+
+
+def build_surt_columns() -> str:
+    """SQL for surtkey-derived columns: surthost, surthost_seg_0..5, surtpath_1..5.
+
+    SURT canonicalization strips a leading 'www' label, so www.foo.gov rows
+    yield the same surthost as bare foo.gov.
+    """
+    parts = [f"{SURTHOST_EXPR} AS surthost"]
+    for i in range(SURTHOST_DEPTH):
+        parts.append(
+            f"list_extract(string_split({SURTHOST_EXPR}, ','), {i + 1}) AS surthost_seg_{i}"
+        )
+    for i in range(1, SURTPATH_DEPTH + 1):
+        parts.append(
+            f"list_extract(string_split(trim({SURTPATH_EXPR}, '/'), '/'), {i}) AS surtpath_{i}"
         )
     return ",\n        ".join(parts)
 
@@ -138,6 +168,7 @@ def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: s
 
     domain_filter = build_domain_filter()
     path_segments = build_path_segment_columns()
+    surt_columns = build_surt_columns()
 
     # Check if target table already exists
     existing = con.sql(
@@ -152,19 +183,19 @@ def load_year(con: duckdb.DuckDBPyConnection, year: int, data_dir, table_name: s
         batch.extend(parse_cdxj_file(filepath, error_log=error_log))
 
         if len(batch) >= BATCH_SIZE:
-            total_inserted += _flush_batch(con, batch, table_name, existing, domain_filter, path_segments, year)
+            total_inserted += _flush_batch(con, batch, table_name, existing, domain_filter, path_segments, surt_columns, year)
             existing = True  # table exists after first flush
             batch.clear()
 
     # Flush remaining
     if batch:
-        total_inserted += _flush_batch(con, batch, table_name, existing, domain_filter, path_segments, year)
+        total_inserted += _flush_batch(con, batch, table_name, existing, domain_filter, path_segments, surt_columns, year)
 
     elapsed = time.time() - t0
     print(f"  Loaded {total_inserted:,} matching rows in {elapsed:.1f}s")
 
 
-def _flush_batch(con, rows, table_name, table_exists, domain_filter, path_segments, year) -> int:
+def _flush_batch(con, rows, table_name, table_exists, domain_filter, path_segments, surt_columns, year) -> int:
     """Insert a batch of parsed CDXJ rows into the target table, filtered."""
     # Register the Python list as a DuckDB temporary table
     con.execute("DROP VIEW IF EXISTS _cdxj_staging")
@@ -198,7 +229,9 @@ def _flush_batch(con, rows, table_name, table_exists, domain_filter, path_segmen
 
         CAST(surtkey AS VARCHAR) AS surtkey,
         CAST(timestamp AS VARCHAR) AS fetch_timestamp,
-        '{year}' AS crawl_year
+        '{year}' AS crawl_year,
+
+        {surt_columns}
 
     FROM _cdxj_staging
     WHERE {domain_filter}
