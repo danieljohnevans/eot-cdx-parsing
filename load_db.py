@@ -210,7 +210,9 @@ def _flush_batch(con, rows, table_name, table_exists, domain_filter, path_segmen
     {verb} {target}
     SELECT
         url,
-        lower(regexp_extract(url, '^[a-z]+://([^/?#:]+)', 1)) AS host,
+        -- host regex: '://' is now optional, so dns:hostname (and other non-authority
+        -- schemes) get their hostname captured. Web URLs unaffected.
+        lower(regexp_extract(url, '^[a-z]+:(?://)?([^/?#:]+)', 1)) AS host,
         regexp_extract(url, '^[a-z]+://[^/]+(/[^?#]*)', 1) AS url_path,
         regexp_extract(url, '\\?(.*)$', 1) AS url_query,
 
