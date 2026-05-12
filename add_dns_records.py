@@ -25,7 +25,7 @@ from pathlib import Path
 import duckdb
 from tqdm import tqdm
 
-from config import AVAILABLE_YEARS, DATA_DIR, DB_PATH, cdxj_dir
+from config import AVAILABLE_YEARS, DATA_DIR, DB_PATH, TARGET_DOMAINS, cdxj_dir
 from load_db import (
     BATCH_SIZE,
     CDXJ_COLUMNS,
@@ -33,6 +33,7 @@ from load_db import (
     build_path_segment_columns,
     build_surt_columns,
 )
+from split_domains import domain_folder_name
 
 
 def parse_dns_lines(path: str, error_log: list | None = None) -> list[dict]:
@@ -150,18 +151,124 @@ def process_year(con, year: int, data_dir: Path, table_name: str) -> int:
     return total_inserted
 
 
+def parse_dns_into_db(db_path: Path, years: list[int], data_dir: Path,
+                      table: str, force: bool) -> bool:
+    """Phase 1: re-parse .cdxj.gz files, insert text/dns rows into one DB.
+
+    Returns True if work was done, False if skipped (already populated).
+    """
+    if not db_path.exists():
+        print(f"  SKIP — DB not found: {db_path}")
+        return False
+
+    con = duckdb.connect(str(db_path))
+    existing = con.sql(
+        f"SELECT COUNT(*) FROM {table} WHERE mime = 'text/dns'"
+    ).fetchone()[0]
+    if existing > 0 and not force:
+        print(f"  {db_path}: already has {existing:,} text/dns rows. Pass --force to add anyway.")
+        con.close()
+        return False
+
+    grand_total = 0
+    for year in years:
+        grand_total += process_year(con, year, data_dir, table)
+
+    final = con.sql(
+        f"SELECT COUNT(*) FROM {table} WHERE mime = 'text/dns'"
+    ).fetchone()[0]
+    print(f"  {db_path}: inserted {grand_total:,} DNS rows. Total text/dns: {final:,}")
+    con.close()
+    return True
+
+
+def propagate_dns_to_domain_db(
+    domain_db: Path,
+    source_db: Path,
+    domain: str,
+    table: str,
+    force: bool,
+) -> bool:
+    """Phase 2: copy DNS rows for one domain from `source_db` into `domain_db`.
+
+    No file parsing — pure SQL ATTACH + INSERT. Fast (~seconds per DB).
+    """
+    if not domain_db.exists():
+        print(f"  SKIP — per-domain DB not found: {domain_db}")
+        return False
+
+    con = duckdb.connect(str(domain_db))
+
+    try:
+        dst_cols = [row[0] for row in con.sql(f"DESCRIBE {table}").fetchall()]
+        con.execute(f"ATTACH '{source_db}' AS src (READ_ONLY)")
+        src_cols = [row[0] for row in con.sql(f"DESCRIBE src.{table}").fetchall()]
+    except duckdb.Error as e:
+        print(f"  ERROR connecting/describing — {e}")
+        con.close()
+        return False
+
+    if dst_cols != src_cols:
+        missing = set(src_cols) - set(dst_cols)
+        extra = set(dst_cols) - set(src_cols)
+        print(f"  SCHEMA MISMATCH for {domain_db}:")
+        if missing:
+            print(f"    columns in source but not destination: {sorted(missing)}")
+        if extra:
+            print(f"    columns in destination but not source: {sorted(extra)}")
+        print(f"    Run `add_surtkey_columns.py` on both DBs first, then retry.")
+        con.execute("DETACH src")
+        con.close()
+        return False
+
+    existing = con.sql(
+        f"SELECT COUNT(*) FROM {table} WHERE mime = 'text/dns'"
+    ).fetchone()[0]
+    if existing > 0 and not force:
+        print(f"  SKIP {domain_db}: already has {existing:,} text/dns rows (use --force)")
+        con.execute("DETACH src")
+        con.close()
+        return False
+
+    domain_pred = f"(host = '{domain}' OR ends_with(host, '.{domain}'))"
+    t0 = time.time()
+    before = con.sql(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    con.execute(f"""
+        INSERT INTO {table}
+        SELECT * FROM src.{table}
+        WHERE mime = 'text/dns' AND {domain_pred}
+    """)
+    after = con.sql(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    inserted = after - before
+    elapsed = time.time() - t0
+    print(f"  {domain_db}: copied {inserted:,} {domain} DNS rows in {elapsed:.1f}s")
+    con.execute("DETACH src")
+    con.close()
+    return True
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Append DNS records to existing CDXJ DuckDB")
+    parser = argparse.ArgumentParser(description="Append DNS records to existing CDXJ DuckDB(s)")
     parser.add_argument(
         "--years", nargs="+", default=["all"],
         help=f"Crawl years to scan. Use 'all' for {AVAILABLE_YEARS}. Default: all",
     )
     parser.add_argument("--data-dir", type=str, default=str(DATA_DIR))
-    parser.add_argument("--db-path", type=str, default=str(DB_PATH))
+    parser.add_argument("--db-path", type=str, default=str(DB_PATH),
+                        help="Full DB to parse DNS into (Phase 1). Default: data/eot.duckdb")
     parser.add_argument("--table", type=str, default="eot_captures")
     parser.add_argument(
         "--force", action="store_true",
         help="Run even if DNS rows already exist (otherwise no-ops to avoid duplicates).",
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="After populating --db-path, also propagate to every data/<NN_name>/cdxj.duckdb.",
+    )
+    parser.add_argument(
+        "--skip-parse", action="store_true",
+        help="Skip Phase 1 (file parsing into full DB). Use when --db-path is already populated; "
+             "implies --all and only does Phase 2 (per-domain copies).",
     )
     args = parser.parse_args()
 
@@ -171,30 +278,27 @@ def main():
         years = [int(y) for y in args.years]
 
     data_dir = Path(args.data_dir)
-    db_path = Path(args.db_path)
-    if not db_path.exists():
-        raise SystemExit(f"DB not found: {db_path}")
+    full_db = Path(args.db_path)
 
-    con = duckdb.connect(str(db_path))
+    # Phase 1: parse files → insert into full DB (unless --skip-parse)
+    if args.skip_parse:
+        print(f"=== Phase 1: SKIPPED ({full_db} assumed already populated) ===\n")
+        if not full_db.exists():
+            raise SystemExit(f"DB not found: {full_db}")
+    else:
+        print(f"=== Phase 1: parse DNS into {full_db} ===")
+        parse_dns_into_db(full_db, years, data_dir, args.table, args.force)
+        print()
 
-    # Idempotency check
-    existing = con.sql(
-        f"SELECT COUNT(*) FROM {args.table} WHERE mime = 'text/dns'"
-    ).fetchone()[0]
-    if existing > 0 and not args.force:
-        print(f"  {db_path}: already has {existing:,} text/dns rows. Pass --force to add anyway.")
-        con.close()
+    # Phase 2: propagate to per-domain DBs (if --all or --skip-parse)
+    if not (args.all or args.skip_parse):
         return
 
-    grand_total = 0
-    for year in years:
-        grand_total += process_year(con, year, data_dir, args.table)
-
-    final = con.sql(
-        f"SELECT COUNT(*) FROM {args.table} WHERE mime = 'text/dns'"
-    ).fetchone()[0]
-    print(f"\nDone. Inserted {grand_total:,} DNS rows. Table now has {final:,} text/dns rows total.")
-    con.close()
+    print(f"=== Phase 2: propagate DNS rows to per-domain DBs ===")
+    for domain in TARGET_DOMAINS:
+        folder = domain_folder_name(domain, TARGET_DOMAINS)
+        domain_db = data_dir / folder / "cdxj.duckdb"
+        propagate_dns_to_domain_db(domain_db, full_db, domain, args.table, args.force)
 
 
 if __name__ == "__main__":
