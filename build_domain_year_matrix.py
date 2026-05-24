@@ -17,9 +17,9 @@ import argparse
 import duckdb
 import pandas as pd
 
-from config import DB_PATH, PARQUET_DB_PATH, TARGET_DOMAINS
+from config import AVAILABLE_YEARS, DB_PATH, PARQUET_DB_PATH, TARGET_DOMAINS
 
-YEARS = [2004, 2008, 2012, 2016, 2020, 2024]
+YEARS = AVAILABLE_YEARS
 
 
 def folder_name(domain: str) -> str:

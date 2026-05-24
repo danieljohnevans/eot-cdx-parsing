@@ -7,7 +7,7 @@ S3_BUCKET = "eotarchive"
 S3_PREFIX = "crawl-data"
 PARQUET_S3_PREFIX = "eot-index/table/eot-main"
 
-AVAILABLE_YEARS = [2004, 2008, 2012, 2016, 2020]
+AVAILABLE_YEARS = [2004, 2008, 2012, 2016, 2020, 2024]
 
 # Federal .gov domains to analyse
 TARGET_DOMAINS = [
