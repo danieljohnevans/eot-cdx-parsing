@@ -32,6 +32,7 @@ from load_db import (
     build_domain_filter,
     build_path_segment_columns,
     build_surt_columns,
+    surtkey_prefix,
 )
 from split_domains import domain_folder_name
 
@@ -230,7 +231,8 @@ def propagate_dns_to_domain_db(
         con.close()
         return False
 
-    domain_pred = f"(host = '{domain}' OR ends_with(host, '.{domain}'))"
+    prefix = surtkey_prefix(domain)
+    domain_pred = f"(surtkey LIKE '{prefix})%' OR surtkey LIKE '{prefix},%')"
     t0 = time.time()
     before = con.sql(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     con.execute(f"""

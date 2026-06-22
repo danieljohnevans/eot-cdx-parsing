@@ -13,8 +13,28 @@ import argparse
 import duckdb
 
 from config import DB_PATH, PARQUET_DB_PATH, TARGET_DOMAINS
+from load_db import surtkey_prefix
 
-DOMAIN_LIST = ", ".join(f"'{d}'" for d in TARGET_DOMAINS)
+
+def surtkey_domain_filter(column: str) -> str:
+    """Build 'col LIKE 'gov,X)%' OR col LIKE 'gov,X,%' OR ...' over all targets."""
+    parts = []
+    for d in TARGET_DOMAINS:
+        p = surtkey_prefix(d)
+        parts.append(f"{column} LIKE '{p})%'")
+        parts.append(f"{column} LIKE '{p},%'")
+    return "(" + " OR ".join(parts) + ")"
+
+
+def surtkey_domain_case(column: str) -> str:
+    """Map a surtkey column to a base_domain label via reversed prefix matching."""
+    lines = []
+    for d in TARGET_DOMAINS:
+        p = surtkey_prefix(d)
+        lines.append(
+            f"        WHEN {column} LIKE '{p})%' OR {column} LIKE '{p},%' THEN '{d}'"
+        )
+    return "\n".join(lines)
 
 
 def section(title: str):
@@ -62,15 +82,14 @@ def main():
     # -- 3. Counts per base domain --
     section("3. Row Counts per Base Domain (all years combined)")
 
-    # Build domain CASE for CDXJ (uses host column with ends_with)
-    cdxj_domain_case = "\n".join(
-        f"        WHEN host = '{d}' OR ends_with(host, '.{d}') THEN '{d}'"
-        for d in TARGET_DOMAINS
-    )
+    # Both sides now use surtkey-based filtering for symmetric comparison.
+    cdxj_case = surtkey_domain_case("surtkey")
+    pq_case = surtkey_domain_case("url_surtkey")
+    pq_filter = surtkey_domain_filter("url_surtkey")
 
     cdxj_domains = cdxj.sql(f"""
         SELECT CASE
-{cdxj_domain_case}
+{cdxj_case}
             ELSE 'other'
         END AS base_domain,
         COUNT(*) AS cdxj_rows
@@ -79,10 +98,13 @@ def main():
     """).df()
 
     pq_domains = pq.sql(f"""
-        SELECT url_host_registered_domain AS base_domain,
-               COUNT(*) AS parquet_rows
+        SELECT CASE
+{pq_case}
+            ELSE 'other'
+        END AS base_domain,
+        COUNT(*) AS parquet_rows
         FROM eot_parquet
-        WHERE url_host_registered_domain IN ({DOMAIN_LIST})
+        WHERE {pq_filter}
         GROUP BY 1 ORDER BY parquet_rows DESC
     """).df()
 
@@ -96,7 +118,7 @@ def main():
 
     cdxj_dy = cdxj.sql(f"""
         SELECT CASE
-{cdxj_domain_case}
+{cdxj_case}
             ELSE 'other'
         END AS base_domain,
         crawl_year,
@@ -106,11 +128,14 @@ def main():
     """).df()
 
     pq_dy = pq.sql(f"""
-        SELECT url_host_registered_domain AS base_domain,
-               crawl_year,
-               COUNT(*) AS parquet_rows
+        SELECT CASE
+{pq_case}
+            ELSE 'other'
+        END AS base_domain,
+        crawl_year,
+        COUNT(*) AS parquet_rows
         FROM eot_parquet
-        WHERE url_host_registered_domain IN ({DOMAIN_LIST})
+        WHERE {pq_filter}
         GROUP BY 1, 2
     """).df()
 
@@ -125,7 +150,7 @@ def main():
     pq.sql(f"""
         SELECT subset, COUNT(*) AS rows
         FROM eot_parquet
-        WHERE url_host_registered_domain IN ({DOMAIN_LIST})
+        WHERE {pq_filter}
         GROUP BY 1
         ORDER BY rows DESC
     """).show()
@@ -145,24 +170,18 @@ def main():
         SELECT COUNT(*) AS total,
                COUNT(*) - COUNT(DISTINCT (url || '|' || COALESCE(content_digest, ''))) AS duplicate_rows
         FROM eot_parquet
-        WHERE url_host_registered_domain IN ({DOMAIN_LIST})
+        WHERE {pq_filter}
     """).show()
 
     # -- 7. Domain matching edge cases --
-    section("7. Parquet Rows Not Matching CDXJ Domain Logic")
-    print("  Hosts in parquet (via url_host_registered_domain) that might not")
-    print("  match CDXJ's ends_with() logic:")
+    # Now both sides use surtkey-based matching, so there are no host-regex
+    # edge cases. This section instead counts parquet rows that would be
+    # classified as 'other' by the surtkey filter — i.e., non-target domains.
+    section("7. Parquet rows outside the surtkey-based target filter (sample)")
     pq.sql(f"""
         SELECT url_host_name, url_host_registered_domain, COUNT(*) AS rows
         FROM eot_parquet
-        WHERE url_host_registered_domain IN ({DOMAIN_LIST})
-          AND url_host_name NOT IN ({DOMAIN_LIST})
-          AND NOT (
-            {' OR '.join(
-                f"ends_with(url_host_name, '.{d}')"
-                for d in TARGET_DOMAINS
-            )}
-          )
+        WHERE NOT {pq_filter}
         GROUP BY 1, 2
         ORDER BY rows DESC
         LIMIT 20

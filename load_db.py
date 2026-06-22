@@ -42,12 +42,24 @@ SURTHOST_DEPTH = 6   # surthost_seg_0..5
 SURTPATH_DEPTH = 5   # surtpath_1..5
 
 
-def build_domain_filter(column: str = "host") -> str:
-    """Build a SQL WHERE clause matching any target domain (exact or subdomain)."""
+def surtkey_prefix(domain: str) -> str:
+    """'doi.gov' -> 'gov,doi' — the surtkey host-portion for a domain."""
+    return ",".join(reversed(domain.split(".")))
+
+
+def build_domain_filter(column: str = "surtkey") -> str:
+    """SQL WHERE clause matching any target domain via the SURT key.
+
+    Uses `surtkey LIKE 'gov,doi)%'` for bare doi.gov and
+    `surtkey LIKE 'gov,doi,%'` for any subdomain. Correctly handles `dns:`,
+    `ftp:`, etc. because surtkey is populated by the indexer for all record
+    types, not derived from a URL regex.
+    """
     conditions = []
     for d in TARGET_DOMAINS:
-        conditions.append(f"{column} = '{d}'")
-        conditions.append(f"ends_with({column}, '.{d}')")
+        prefix = surtkey_prefix(d)
+        conditions.append(f"{column} LIKE '{prefix})%'")
+        conditions.append(f"{column} LIKE '{prefix},%'")
     return " OR ".join(conditions)
 
 

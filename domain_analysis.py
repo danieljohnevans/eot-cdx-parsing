@@ -6,9 +6,18 @@ the TLD comes first. Example:
 
 Reference: http://crawler.archive.org/articles/user_manual/glossary.html#surt
 
-Every row in `eot_captures` carries a `surtkey` column populated during CDXJ
-load (see load_db.py). These helpers extract base_domain / subdomain from
-that key so analysis queries don't need hard-coded host CASE statements.
+After `add_surtkey_columns.py` migration, every row in `eot_captures` carries
+materialized columns derived from the surtkey:
+    - `surthost`        e.g. 'gov,doi,data'
+    - `surthost_seg_0`  TLD ('gov')
+    - `surthost_seg_1`  registered-domain label ('doi')
+    - `surthost_seg_2`  first subdomain label, or NULL for bare/www
+    - `surthost_seg_3..5`  deeper subdomain labels, NULL if absent
+    - `surtpath_1..5`   surtkey path segments (lowercased per SURT)
+
+These helpers prefer the materialized columns when available; the SQL-expression
+variants (`surt_parts_sql`, `subdomain_sql`, etc.) remain available for backward
+compatibility with code that may run against an unmigrated DB.
 """
 
 from __future__ import annotations
@@ -17,17 +26,21 @@ import duckdb
 import pandas as pd
 
 
-def surt_parts_sql(col: str = "surtkey") -> str:
-    """SQL expression returning the host components of a SURT key as a list.
+# ---------- Legacy SQL expressions (regex on surtkey, no surt columns needed) ----------
 
-    Example: 'gov,transportation,data)/x' -> ['gov', 'transportation', 'data']
-    DuckDB lists are 1-indexed.
+def surt_parts_sql(col: str = "surtkey") -> str:
+    """Legacy: SQL expression returning host components of a SURT key as a list.
+
+    Prefer the materialized `surthost_seg_0..5` columns when available.
     """
     return f"string_split(regexp_extract({col}, '^([^)]+)\\)', 1), ',')"
 
 
 def base_domain_sql(col: str = "surtkey") -> str:
-    """SQL expression yielding the registered base domain, e.g. 'transportation.gov'."""
+    """Legacy: SQL expression yielding the registered base domain, e.g. 'transportation.gov'.
+
+    Prefer `surthost_seg_1 || '.' || surthost_seg_0` against migrated tables.
+    """
     parts = surt_parts_sql(col)
     return (
         f"CASE WHEN len({parts}) >= 2 "
@@ -37,10 +50,9 @@ def base_domain_sql(col: str = "surtkey") -> str:
 
 
 def subdomain_sql(col: str = "surtkey") -> str:
-    """SQL expression yielding the subdomain prefix (leftmost...innermost).
+    """Legacy: SQL expression yielding the joined subdomain prefix.
 
-    'gov,transportation,data,www)/x'  -> 'www.data'
-    'gov,transportation)/x'           -> ''   (bare domain)
+    For migrated tables, prefer `surthost_seg_2` for top-level subdomain.
     """
     parts = surt_parts_sql(col)
     return (
@@ -51,9 +63,17 @@ def subdomain_sql(col: str = "surtkey") -> str:
 
 
 def tld_sql(col: str = "surtkey") -> str:
-    """SQL expression yielding the TLD, e.g. 'gov'."""
+    """Legacy: SQL expression yielding the TLD. Prefer `surthost_seg_0`."""
     parts = surt_parts_sql(col)
     return f"CASE WHEN len({parts}) >= 1 THEN {parts}[1] ELSE NULL END"
+
+
+# ---------- Modern helpers (use materialized surthost_seg_* columns) ----------
+
+def _has_surthost_columns(con: duckdb.DuckDBPyConnection, table: str) -> bool:
+    """Check whether the materialized surthost columns exist on this table."""
+    cols = {row[0] for row in con.sql(f"DESCRIBE {table}").fetchall()}
+    return {"surthost", "surthost_seg_0", "surthost_seg_1", "surthost_seg_2"}.issubset(cols)
 
 
 def build_domain_summary(
@@ -64,12 +84,20 @@ def build_domain_summary(
 
     Columns: base_domain, total_captures, unique_subdomains, years_covered,
              top_subdomain, top_subdomain_count, bare_captures, pct_bare.
+
+    Uses materialized `surthost_seg_*` columns when available; falls back to
+    regex-on-surtkey for unmigrated tables.
     """
-    bd = base_domain_sql()
-    sd = subdomain_sql()
+    if _has_surthost_columns(con, table):
+        base = "(surthost_seg_1 || '.' || surthost_seg_0)"
+        sub = "COALESCE(surthost_seg_2, '')"
+    else:
+        base = base_domain_sql()
+        sub = subdomain_sql()
+
     sql = f"""
     WITH parsed AS (
-        SELECT {bd} AS base_domain, {sd} AS subdomain, crawl_year
+        SELECT {base} AS base_domain, {sub} AS subdomain, crawl_year
         FROM {table}
         WHERE surtkey IS NOT NULL
     ),
@@ -118,16 +146,21 @@ def build_subdomain_breakdown(
     table: str = "eot_captures",
     limit: int = 20,
 ) -> pd.DataFrame:
-    """Top-N subdomains by capture count, pivoted by crawl year.
+    """Top-N subdomains (by `surthost_seg_2`) pivoted by crawl year.
 
-    For single-domain DBs this is a subdomain-only view. For the aggregate DB
-    (explore_eot.ipynb) the table is multi-domain; pass a pre-filtered
-    connection/view if you need per-domain breakdowns.
+    Note: `surthost_seg_2` collapses multi-level subdomains under their top
+    label (e.g. `iosst1.ios.doi.gov` -> 'ios'). Use `surthost_seg_3` etc. for
+    deeper drilling.
     """
-    sd = subdomain_sql()
+    if _has_surthost_columns(con, table):
+        sub_expr = "COALESCE(surthost_seg_2, '(bare/www)')"
+    else:
+        sd = subdomain_sql()
+        sub_expr = f"CASE WHEN {sd} = '' THEN '(bare/www)' ELSE {sd} END"
+
     df = con.sql(f"""
         SELECT
-            CASE WHEN {sd} = '' THEN '(bare)' ELSE {sd} END AS subdomain,
+            {sub_expr} AS subdomain,
             crawl_year,
             COUNT(*) AS n
         FROM {table}

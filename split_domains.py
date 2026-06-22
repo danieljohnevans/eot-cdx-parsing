@@ -16,6 +16,7 @@ from pathlib import Path
 import duckdb
 
 from config import DB_PATH, PARQUET_DB_PATH, TARGET_DOMAINS
+from load_db import surtkey_prefix
 
 DATA_DIR = Path("data")
 
@@ -37,10 +38,11 @@ def split_cdxj(cdxj_path: str, domain: str, out_path: Path):
 
     # Attach source as read-only
     dst.execute(f"ATTACH '{cdxj_path}' AS src (READ_ONLY)")
+    prefix = surtkey_prefix(domain)
     dst.execute(f"""
         CREATE TABLE eot_captures AS
         SELECT * FROM src.eot_captures
-        WHERE host = '{domain}' OR ends_with(host, '.{domain}')
+        WHERE surtkey LIKE '{prefix})%' OR surtkey LIKE '{prefix},%'
     """)
     count = dst.sql("SELECT COUNT(*) FROM eot_captures").fetchone()[0]
     dst.execute("DETACH src")
@@ -57,10 +59,11 @@ def split_parquet(parquet_path: str, domain: str, out_path: Path):
     dst.execute("DROP TABLE IF EXISTS eot_parquet")
 
     dst.execute(f"ATTACH '{parquet_path}' AS src (READ_ONLY)")
+    prefix = surtkey_prefix(domain)
     dst.execute(f"""
         CREATE TABLE eot_parquet AS
         SELECT * FROM src.eot_parquet
-        WHERE url_host_registered_domain = '{domain}'
+        WHERE url_surtkey LIKE '{prefix})%' OR url_surtkey LIKE '{prefix},%'
     """)
     count = dst.sql("SELECT COUNT(*) FROM eot_parquet").fetchone()[0]
     dst.execute("DETACH src")

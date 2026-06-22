@@ -18,6 +18,7 @@ import duckdb
 import pandas as pd
 
 from config import AVAILABLE_YEARS, DB_PATH, PARQUET_DB_PATH, TARGET_DOMAINS
+from load_db import surtkey_prefix
 
 YEARS = AVAILABLE_YEARS
 
@@ -27,15 +28,23 @@ def folder_name(domain: str) -> str:
     return f"{idx:02d}_{domain.removesuffix('.gov')}"
 
 
+def _surtkey_domain_case(column: str) -> str:
+    """Build a CASE expression mapping a surtkey column to base domain label."""
+    lines = []
+    for d in TARGET_DOMAINS:
+        p = surtkey_prefix(d)
+        lines.append(
+            f"        WHEN {column} LIKE '{p})%' OR {column} LIKE '{p},%' THEN '{d}'"
+        )
+    return "\n".join(lines)
+
+
 def cdxj_long(path: str) -> pd.DataFrame:
     con = duckdb.connect(path, read_only=True)
-    domain_case = "\n".join(
-        f"        WHEN host = '{d}' OR ends_with(host, '.{d}') THEN '{d}'"
-        for d in TARGET_DOMAINS
-    )
+    case_sql = _surtkey_domain_case("surtkey")
     df = con.sql(f"""
         SELECT CASE
-{domain_case}
+{case_sql}
             ELSE NULL END AS domain,
         CAST(crawl_year AS INTEGER) AS year,
         COUNT(*) AS n
@@ -50,16 +59,18 @@ def cdxj_long(path: str) -> pd.DataFrame:
 
 def parquet_long(path: str) -> pd.DataFrame:
     con = duckdb.connect(path, read_only=True)
-    dl = ", ".join(f"'{d}'" for d in TARGET_DOMAINS)
+    case_sql = _surtkey_domain_case("url_surtkey")
     df = con.sql(f"""
-        SELECT url_host_registered_domain AS domain,
-               CAST(crawl_year AS INTEGER) AS year,
-               COUNT(*) AS n
+        SELECT CASE
+{case_sql}
+            ELSE NULL END AS domain,
+        CAST(crawl_year AS INTEGER) AS year,
+        COUNT(*) AS n
         FROM eot_parquet
-        WHERE url_host_registered_domain IN ({dl})
         GROUP BY 1, 2
     """).df()
     con.close()
+    df = df.dropna(subset=["domain"])
     df["source"] = "parquet"
     return df
 
