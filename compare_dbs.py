@@ -17,22 +17,27 @@ from load_db import surtkey_prefix
 
 
 def surtkey_domain_filter(column: str) -> str:
-    """Build 'col LIKE 'gov,X)%' OR col LIKE 'gov,X,%' OR ...' over all targets."""
+    """Build a WHERE clause matching all target domains via SURT host patterns.
+
+    Matches `gov,X)`, `gov,X:PORT)`, and `gov,X,...` for each target.
+    """
     parts = []
     for d in TARGET_DOMAINS:
         p = surtkey_prefix(d)
         parts.append(f"{column} LIKE '{p})%'")
+        parts.append(f"{column} LIKE '{p}:%'")
         parts.append(f"{column} LIKE '{p},%'")
     return "(" + " OR ".join(parts) + ")"
 
 
 def surtkey_domain_case(column: str) -> str:
-    """Map a surtkey column to a base_domain label via reversed prefix matching."""
+    """Map a surtkey column to a base_domain label via SURT host pattern."""
     lines = []
     for d in TARGET_DOMAINS:
         p = surtkey_prefix(d)
         lines.append(
-            f"        WHEN {column} LIKE '{p})%' OR {column} LIKE '{p},%' THEN '{d}'"
+            f"        WHEN {column} LIKE '{p})%' OR {column} LIKE '{p}:%' "
+            f"OR {column} LIKE '{p},%' THEN '{d}'"
         )
     return "\n".join(lines)
 

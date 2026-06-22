@@ -50,16 +50,20 @@ def surtkey_prefix(domain: str) -> str:
 def build_domain_filter(column: str = "surtkey") -> str:
     """SQL WHERE clause matching any target domain via the SURT key.
 
-    Uses `surtkey LIKE 'gov,doi)%'` for bare doi.gov and
-    `surtkey LIKE 'gov,doi,%'` for any subdomain. Correctly handles `dns:`,
-    `ftp:`, etc. because surtkey is populated by the indexer for all record
-    types, not derived from a URL regex.
+    Matches three SURT host shapes per domain:
+      `gov,doi)...`     bare domain, default port
+      `gov,doi:8080)...` bare domain on non-default port
+      `gov,doi,sub)...`  any subdomain (with or without port — port lives after the sub label)
+
+    Correctly handles `dns:`, `ftp:`, etc. because surtkey is populated by the
+    indexer for all record types, not derived from a URL regex.
     """
     conditions = []
     for d in TARGET_DOMAINS:
         prefix = surtkey_prefix(d)
-        conditions.append(f"{column} LIKE '{prefix})%'")
-        conditions.append(f"{column} LIKE '{prefix},%'")
+        conditions.append(f"{column} LIKE '{prefix})%'")    # bare, default port
+        conditions.append(f"{column} LIKE '{prefix}:%'")    # bare, non-default port
+        conditions.append(f"{column} LIKE '{prefix},%'")    # subdomain
     return " OR ".join(conditions)
 
 

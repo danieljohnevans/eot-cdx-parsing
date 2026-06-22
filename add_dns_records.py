@@ -232,7 +232,10 @@ def propagate_dns_to_domain_db(
         return False
 
     prefix = surtkey_prefix(domain)
-    domain_pred = f"(surtkey LIKE '{prefix})%' OR surtkey LIKE '{prefix},%')"
+    domain_pred = (
+        f"(surtkey LIKE '{prefix})%' OR surtkey LIKE '{prefix}:%' "
+        f"OR surtkey LIKE '{prefix},%')"
+    )
     t0 = time.time()
     before = con.sql(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     con.execute(f"""

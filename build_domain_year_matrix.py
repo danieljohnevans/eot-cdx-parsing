@@ -29,12 +29,17 @@ def folder_name(domain: str) -> str:
 
 
 def _surtkey_domain_case(column: str) -> str:
-    """Build a CASE expression mapping a surtkey column to base domain label."""
+    """Build a CASE expression mapping a surtkey column to base domain label.
+
+    Matches bare (`gov,X)`), bare-with-port (`gov,X:PORT)`), and subdomain
+    (`gov,X,...`) SURT host shapes.
+    """
     lines = []
     for d in TARGET_DOMAINS:
         p = surtkey_prefix(d)
         lines.append(
-            f"        WHEN {column} LIKE '{p})%' OR {column} LIKE '{p},%' THEN '{d}'"
+            f"        WHEN {column} LIKE '{p})%' OR {column} LIKE '{p}:%' "
+            f"OR {column} LIKE '{p},%' THEN '{d}'"
         )
     return "\n".join(lines)
 

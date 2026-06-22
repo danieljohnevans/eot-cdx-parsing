@@ -42,7 +42,9 @@ def split_cdxj(cdxj_path: str, domain: str, out_path: Path):
     dst.execute(f"""
         CREATE TABLE eot_captures AS
         SELECT * FROM src.eot_captures
-        WHERE surtkey LIKE '{prefix})%' OR surtkey LIKE '{prefix},%'
+        WHERE surtkey LIKE '{prefix})%'
+           OR surtkey LIKE '{prefix}:%'
+           OR surtkey LIKE '{prefix},%'
     """)
     count = dst.sql("SELECT COUNT(*) FROM eot_captures").fetchone()[0]
     dst.execute("DETACH src")
@@ -63,7 +65,9 @@ def split_parquet(parquet_path: str, domain: str, out_path: Path):
     dst.execute(f"""
         CREATE TABLE eot_parquet AS
         SELECT * FROM src.eot_parquet
-        WHERE url_surtkey LIKE '{prefix})%' OR url_surtkey LIKE '{prefix},%'
+        WHERE url_surtkey LIKE '{prefix})%'
+           OR url_surtkey LIKE '{prefix}:%'
+           OR url_surtkey LIKE '{prefix},%'
     """)
     count = dst.sql("SELECT COUNT(*) FROM eot_parquet").fetchone()[0]
     dst.execute("DETACH src")
