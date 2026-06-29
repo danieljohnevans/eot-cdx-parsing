@@ -302,7 +302,7 @@ def main():
     print(f"=== Phase 2: propagate DNS rows to per-domain DBs ===")
     for domain in TARGET_DOMAINS:
         folder = domain_folder_name(domain, TARGET_DOMAINS)
-        domain_db = data_dir / folder / "cdxj.duckdb"
+        domain_db = data_dir / "domains" / folder / "cdxj.duckdb"
         propagate_dns_to_domain_db(domain_db, full_db, domain, args.table, args.force)
 
 

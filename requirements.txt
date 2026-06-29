@@ -1,3 +1,6 @@
 boto3
 duckdb
 tqdm
+matplotlib
+seaborn
+pyarrow
