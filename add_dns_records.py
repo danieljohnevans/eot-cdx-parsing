@@ -29,25 +29,38 @@ from config import AVAILABLE_YEARS, DATA_DIR, DB_PATH, TARGET_DOMAINS, cdxj_dir
 from load_db import (
     BATCH_SIZE,
     CDXJ_COLUMNS,
-    build_domain_filter,
     build_path_segment_columns,
     build_surt_columns,
-    surtkey_prefix,
 )
 from split_domains import domain_folder_name
+
+# DNS records are keyed `dns:host` and carry the hostname in the URL, not a
+# reversed-SURT key — so the normal surtkey-prefix domain filter never matches
+# them. Match on the host extracted from the URL instead: bare domain or any
+# subdomain. `url_expr` is the SQL expression yielding the raw dns: URL.
+def build_dns_host_filter(url_expr: str = "url") -> str:
+    host = f"lower(regexp_extract({url_expr}, '^[a-z]+:(?://)?([^/?#:]+)', 1))"
+    parts = []
+    for d in TARGET_DOMAINS:
+        parts.append(f"{host} = '{d}'")
+        parts.append(f"{host} LIKE '%.{d}'")
+    return "(" + " OR ".join(parts) + ")"
 
 
 def parse_dns_lines(path: str, error_log: list | None = None) -> list[dict]:
     """Parse a single .cdxj.gz file, keeping only `text/dns` records.
 
     Two-stage filter for speed:
-    1. Cheap substring check on the raw line: skip anything without `"url":"dns:`.
+    1. Cheap substring check on the raw line: skip anything without `text/dns`.
+       (Gating on the mime value is whitespace-independent — earlier CDXJ files
+       serialize JSON with spaces (`"url": "dns:`), so the old `"url":"dns:`
+       needle silently matched nothing and dropped every DNS record.)
     2. JSON parse + confirm `mime == 'text/dns'`.
     """
     rows = []
     with gzip.open(path, "rt", encoding="utf-8") as f:
         for lineno, line in enumerate(f, 1):
-            if '"url":"dns:' not in line:
+            if "text/dns" not in line:
                 continue
             try:
                 key, ts, json_blob = line.strip().split(" ", 2)
@@ -125,7 +138,7 @@ def process_year(con, year: int, data_dir: Path, table_name: str) -> int:
     print(f"  Processing EOT-{year} ({len(files)} files)...")
     t0 = time.time()
 
-    domain_filter = build_domain_filter()
+    domain_filter = build_dns_host_filter()
     path_segments = build_path_segment_columns()
     surt_columns = build_surt_columns()
 
@@ -170,6 +183,10 @@ def parse_dns_into_db(db_path: Path, years: list[int], data_dir: Path,
         print(f"  {db_path}: already has {existing:,} text/dns rows. Pass --force to add anyway.")
         con.close()
         return False
+    if existing > 0 and force:
+        # Delete first so a re-run replaces rather than duplicates existing DNS rows.
+        con.execute(f"DELETE FROM {table} WHERE mime = 'text/dns'")
+        print(f"  {db_path}: --force, deleted {existing:,} existing text/dns rows before reload.")
 
     grand_total = 0
     for year in years:
@@ -230,12 +247,14 @@ def propagate_dns_to_domain_db(
         con.execute("DETACH src")
         con.close()
         return False
+    if existing > 0 and force:
+        con.execute(f"DELETE FROM {table} WHERE mime = 'text/dns'")
+        print(f"  {domain_db}: --force, deleted {existing:,} existing text/dns rows before reload.")
 
-    prefix = surtkey_prefix(domain)
-    domain_pred = (
-        f"(surtkey LIKE '{prefix})%' OR surtkey LIKE '{prefix}:%' "
-        f"OR surtkey LIKE '{prefix},%')"
-    )
+    # DNS records are keyed `dns:host` (e.g. dns:nces.ed.gov?type=a), NOT reversed
+    # SURT, so surtkey-prefix matching never selects them. Match on the extracted
+    # host column instead: the bare domain or any subdomain of it.
+    domain_pred = f"(host = '{domain}' OR host LIKE '%.{domain}')"
     t0 = time.time()
     before = con.sql(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     con.execute(f"""
