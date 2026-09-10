@@ -50,3 +50,43 @@ def cdxj_dir(data_dir: Path, year: int) -> Path:
 def cdxj_glob(data_dir: Path, year: int) -> str:
     """Return a glob string for all CDXJ files for a year."""
     return str(cdxj_dir(data_dir, year) / "*.cdxj.gz")
+
+
+# Map full domain -> folder basename used under data/domains/ (e.g. 'doi.gov' -> 'doi')
+_DOMAIN_BASENAME = {d: d.split(".gov")[0] for d in TARGET_DOMAINS}
+
+
+def discover_domain_dbs(kind: str = "cdxj", search_roots=None) -> dict:
+    """Locate each target domain's per-domain DuckDB, across local & server layouts.
+
+    Handles both the server layout (``data/domains/NN_name/{kind}.duckdb``) and the
+    local layout (``data/NN_name/{kind}.duckdb``), whether the notebook is run from
+    the repo root or a subdirectory. Returns an *ordered* dict {domain: Path} for the
+    domains actually found, in TARGET_DOMAINS order. Missing domains are simply absent.
+
+    kind: 'cdxj' or 'parquet'.
+    """
+    import glob
+    import re
+
+    roots = search_roots or [".", "..", DATA_DIR, Path("..") / DATA_DIR]
+    basename_to_domain = {b: d for d, b in _DOMAIN_BASENAME.items()}
+    patterns = []
+    for r in roots:
+        r = Path(r)
+        patterns += [
+            str(r / "data" / "domains" / "*" / f"{kind}.duckdb"),
+            str(r / "data" / "*" / f"{kind}.duckdb"),
+            str(r / "domains" / "*" / f"{kind}.duckdb"),
+            str(r / "*" / f"{kind}.duckdb"),
+        ]
+    found = {}
+    for pat in patterns:
+        for p in glob.glob(pat):
+            folder = Path(p).parent.name          # e.g. '04_doi'
+            base = re.sub(r"^\d+_", "", folder)    # e.g. 'doi'
+            dom = basename_to_domain.get(base)
+            if dom and dom not in found:
+                found[dom] = Path(p)
+    # return in canonical TARGET_DOMAINS order
+    return {d: found[d] for d in TARGET_DOMAINS if d in found}

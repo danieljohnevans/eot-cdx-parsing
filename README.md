@@ -54,10 +54,29 @@ data/
   cdxj/EOT-{year}/        # raw downloaded .cdxj.gz files
   parquet/EOT-{year}/     # raw downloaded .parquet files
 
+analysis/                 # RQ-focused analysis notebooks (current)
+  00_data_and_methods.ipynb          # corpus, dedup rule, readability classifier + validation
+  rq1_readability_over_time.ipynb    # human vs machine URL segments over time
+  rq2_complexity_and_construction.ipynb  # depth/length + CMS/framework tells
+  rq3_human_vocabulary.ipynb         # what the human words are, and how they shift
+
 record_analysis/
   dns_analysis.ipynb      # DNS record outlier analysis (ed.gov)
   surt_dedup_analysis.ipynb  # SURT URL deduplication and cross-year overlap
+
+archive/                  # superseded notebooks kept for reference (not maintained)
+  EOT_parquet.ipynb                  # early Colab pipeline experiments
+  generate_domain_notebooks.py       # old per-domain notebook generator
+  domain_analysis/url_structure_*.ipynb  # 15 per-domain notebooks (replaced by analysis/)
 ```
+
+## Research question
+
+**Can we trace a shift from human-readable to machine-readable URLs on the U.S.
+federal web, 2004–2024?** URL readability is government-relevant (plain-language /
+usability guidance favors human-meaningful, citable URLs), so a measured decline
+is a finding in tension with policy — not just generic web-tech evolution. The
+`analysis/` notebooks address this; start with `00_data_and_methods.ipynb`.
 
 ## Target Domains
 
@@ -78,6 +97,14 @@ record_analysis/
 | `add_dns_records.py` | Backfill `text/dns` records (introduced in 2024 crawl) |
 | `add_surtkey_columns.py` | Add SURT-derived columns to existing DBs |
 | `build_domain_year_matrix.py` | Build summary CSV of captures per domain per year |
+
+## Analysis modules (imported by the `analysis/` notebooks)
+
+| Module | Purpose |
+|--------|---------|
+| `readability.py` | `classify_segment()` — labels a URL path segment `human` / `acronym` / `machine` using `wordfreq`. Single source of truth for the readability method; tunables are module constants. |
+| `eot_segments.py` | Dedup + directory-path + positional-segment extraction pooled across domains (`load_segments`, `readability_pct`). |
+| `config.py` | `discover_domain_dbs()` finds each per-domain DuckDB across local/server layouts, plus paths and `TARGET_DOMAINS`. |
 
 ## Notes
 
