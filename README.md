@@ -59,8 +59,11 @@ analysis/                 # RQ-focused analysis notebooks (current)
   rq1_readability_over_time.ipynb    # human vs machine URL segments over time
   rq2_complexity_and_construction.ipynb  # depth/length + CMS/framework tells
   rq3_human_vocabulary.ipynb         # what the human words are, and how they shift
-  subdomains_and_paths.ipynb         # EM analyses 1-2: subdomain counts over time;
-                                     #   path vs. filename+extension (writes deliverables/*.csv)
+  a1_subdomains.ipynb                # EM analysis 1: subdomain counts over time (seg2/seg3),
+                                     #   small multiples, shared-name patterns, URL-sample QA
+  a2_paths.ipynb                     # EM analysis 2: path vs. filename+extension
+                                     #   (extension must contain a letter; .2345 excluded)
+                                     # both write analysis/deliverables/*.csv
 
 record_analysis/
   dns_analysis.ipynb      # DNS record outlier analysis (ed.gov)
