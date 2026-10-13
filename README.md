@@ -63,7 +63,10 @@ analysis/                 # RQ-focused analysis notebooks (current)
                                      #   small multiples, shared-name patterns, URL-sample QA
   a2_paths.ipynb                     # EM analysis 2: path vs. filename+extension
                                      #   (extension must contain a letter; .2345 excluded)
-                                     # both write analysis/deliverables/*.csv
+  a3_path_structure.ipynb            # EM analysis 3a-g: path length / depth, segment
+                                     #   presence, longest segments, word separators,
+                                     #   RFC-3986 reserved characters
+                                     # all write analysis/deliverables/*.csv
 
 record_analysis/
   dns_analysis.ipynb      # DNS record outlier analysis (ed.gov)
